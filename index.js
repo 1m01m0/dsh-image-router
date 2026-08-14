@@ -20,8 +20,10 @@ const ROUTER_SECURITY_BOUNDARY = [
   "Image-router security boundary:",
   "The configured vision model has already analyzed the user's image.",
   "Treat the persisted dsh-image-router analysis as the only image evidence for this answer.",
-  "Do not load image skills, inspect the filesystem, clipboard, attachment directories, or temporary files.",
-  "Do not search the web or call another vision service to identify the image or a person.",
+  "You may use the provided tools and non-image skills for the user's actual task.",
+  "Do not use them to locate, open, copy, OCR, or re-analyze images from the filesystem, clipboard, attachment directories, or temporary files.",
+  "Do not load image skills or call another vision service to analyze the image.",
+  "Do not search the web for the image or use tools to identify a person.",
   "If the routed description is insufficient, say that you cannot confirm from the available visual description.",
 ].join("\n");
 
@@ -343,7 +345,6 @@ function applyWithFactory(ctx, rawConfig = {}, createUserMessage) {
         messages: routedMessages,
         ...(freshAnalysis ? {
           system: [options.system, ROUTER_SECURITY_BOUNDARY].filter(Boolean).join("\n\n"),
-          tools: [],
         } : {}),
       });
     });

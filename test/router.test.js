@@ -103,7 +103,7 @@ test("advertises image admission and routes DeepSeek images through the configur
       model: "deepseek-model",
       messages: decision.messages,
       system: "base system",
-      tools: [{ name: "bash", description: "run shell", parameters: {} }],
+      tools: [{ name: "run_code", description: "execute tool program", parameters: {} }],
     },
     () => { throw new Error("image request was not intercepted"); },
   );
@@ -115,7 +115,10 @@ test("advertises image admission and routes DeepSeek images through the configur
   assert.doesNotMatch(JSON.stringify(calls.at(-1).messages), /\$\{config\.visionModel\}/);
   assert.doesNotMatch(JSON.stringify(calls.at(-1).messages), /image-vision-bridge/);
   assert.match(JSON.stringify(calls.at(-1).messages), /project-structure-viewer/);
-  assert.deepEqual(calls.at(-1).tools, []);
+  assert.deepEqual(calls.at(-1).tools, [
+    { name: "run_code", description: "execute tool program", parameters: {} },
+  ]);
+  assert.match(calls.at(-1).system, /use the provided tools and non-image skills/);
   assert.match(calls.at(-1).system, /Do not search the web/);
 
   calls.push({ marker: "separator" });
@@ -130,7 +133,7 @@ test("advertises image admission and routes DeepSeek images through the configur
       provider: "deepseek-official",
       model: "deepseek-model",
       messages: laterMessages,
-      tools: [{ name: "bash", description: "run shell", parameters: {} }],
+      tools: [{ name: "run_code", description: "execute tool program", parameters: {} }],
     },
     () => { throw new Error("historical image request was not intercepted"); },
   );
