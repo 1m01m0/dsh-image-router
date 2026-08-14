@@ -16,6 +16,15 @@ const DEFAULT_CONFIG = Object.freeze({
   visionMaxTokens: 4096,
 });
 
+const ROUTER_SECURITY_BOUNDARY = [
+  "Image-router security boundary:",
+  "The configured vision model has already analyzed the user's image.",
+  "Treat the persisted dsh-image-router analysis as the only image evidence for this answer.",
+  "Do not load image skills, inspect the filesystem, clipboard, attachment directories, or temporary files.",
+  "Do not search the web or call another vision service to identify the image or a person.",
+  "If the routed description is insufficient, say that you cannot confirm from the available visual description.",
+].join("\n");
+
 function contentHasImage(content) {
   if (!Array.isArray(content)) return false;
   return content.some(
@@ -209,7 +218,8 @@ function analysisMessage(analysis, config, createUserMessage) {
     ? `${config.visionModel} 已分析 ${analysis.count} 张图片`
     : `${config.visionModel} 视觉分析失败`;
   const text = analysis.ok
-    ? `[${config.visionModel} 视觉分析，仅供 DeepSeek 回答时参考]\n${analysis.text}`
+    ? `[${config.visionModel} 视觉分析，仅供 DeepSeek 回答时参考]\n${analysis.text}\n\n` +
+      "[安全边界] 本轮只能依据上述视觉描述回答；禁止调用技能或工具查找本地图片、剪贴板、附件目录或联网识别。描述不足时直接说明无法确认。"
     : `[视觉分析失败]\n${analysis.error}`;
   return createUserMessage({
     source: {
@@ -254,6 +264,51 @@ function stripImagesFromMessages(messages, config) {
   });
 }
 
+function isRouterAnalysis(message) {
+  return message?.source?.kind === "plugin" && message.source.plugin === "dsh-image-router";
+}
+
+function isFreshRouterAnalysis(messages) {
+  let analysisIndex = -1;
+  let assistantIndex = -1;
+  messages.forEach((message, index) => {
+    if (isRouterAnalysis(message)) analysisIndex = index;
+    if (message?.role === "assistant") assistantIndex = index;
+  });
+  return analysisIndex > assistantIndex;
+}
+
+function removeImageVisionSkill(messages) {
+  const output = [];
+  for (const message of messages) {
+    if (message?.source?.kind !== "skill-catalog") {
+      output.push(message);
+      continue;
+    }
+    const entries = Array.isArray(message.source.entries)
+      ? message.source.entries.filter((entry) => entry?.name !== "image-vision-bridge")
+      : undefined;
+    const content = Array.isArray(message.content)
+      ? message.content.map((block) => block?.type === "text"
+        ? {
+            ...block,
+            text: block.text
+              .split("\n")
+              .filter((line) => !line.includes("image-vision-bridge"))
+              .join("\n"),
+          }
+        : block)
+      : message.content;
+    if (entries !== undefined && entries.length === 0) continue;
+    output.push({
+      ...message,
+      source: entries === undefined ? message.source : { ...message.source, entries },
+      content,
+    });
+  }
+  return output;
+}
+
 function applyWithFactory(ctx, rawConfig = {}, createUserMessage) {
   const config = { ...DEFAULT_CONFIG, ...rawConfig };
   ctx.effect(
@@ -275,15 +330,23 @@ function applyWithFactory(ctx, rawConfig = {}, createUserMessage) {
     };
   });
 
-  ctx.on("llm/stream", (options, next) => {
-    if (!isDeepSeekProvider(options.provider, config) || !messagesHaveImage(options.messages)) {
-      return next();
-    }
-    return ctx.llm.stream({
-      ...options,
-      messages: stripImagesFromMessages(options.messages, config),
+    ctx.on("llm/stream", (options, next) => {
+      if (!isDeepSeekProvider(options.provider, config) || !messagesHaveImage(options.messages)) {
+        return next();
+      }
+      const freshAnalysis = isFreshRouterAnalysis(options.messages);
+      const routedMessages = removeImageVisionSkill(
+        stripImagesFromMessages(options.messages, config),
+      );
+      return ctx.llm.stream({
+        ...options,
+        messages: routedMessages,
+        ...(freshAnalysis ? {
+          system: [options.system, ROUTER_SECURITY_BOUNDARY].filter(Boolean).join("\n\n"),
+          tools: [],
+        } : {}),
+      });
     });
-  });
 }
 
 module.exports = {

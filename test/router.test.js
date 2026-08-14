@@ -72,16 +72,39 @@ test("advertises image admission and routes DeepSeek images through the configur
       attachment: { attachmentId: "a1", mediaType: "image/png", bytes: 1, width: 1, height: 1 },
     }],
   };
+  const skillCatalog = {
+    id: "skills",
+    role: "user",
+    source: {
+      kind: "skill-catalog",
+      entries: [
+        { name: "image-vision-bridge", description: "find and analyze images" },
+        { name: "project-structure-viewer", description: "map projects" },
+      ],
+    },
+    content: [{
+      type: "text",
+      text: "- `image-vision-bridge`: find images\n- `project-structure-viewer`: map projects",
+    }],
+  };
   const signal = new AbortController().signal;
   const decision = await listeners.get("agent/pre-step")[0](
     { agent: { options: { provider: "deepseek-official" } }, messages: [image], signal },
-    async () => ({ kind: "enter", messages: [image] }),
+    async () => ({ kind: "enter", messages: [image, skillCatalog] }),
   );
   assert.equal(calls[0].provider, "vision-provider");
-  assert.match(decision.messages[1].content[0].text, /测试图片描述/);
+  const analysis = decision.messages.find((message) => message.source?.plugin === "dsh-image-router");
+  assert.ok(analysis);
+  assert.match(analysis.content[0].text, /测试图片描述/);
 
   const routed = listeners.get("llm/stream")[0](
-    { provider: "deepseek-official", model: "deepseek-model", messages: decision.messages },
+    {
+      provider: "deepseek-official",
+      model: "deepseek-model",
+      messages: decision.messages,
+      system: "base system",
+      tools: [{ name: "bash", description: "run shell", parameters: {} }],
+    },
     () => { throw new Error("image request was not intercepted"); },
   );
   assert.equal(typeof routed[Symbol.asyncIterator], "function");
@@ -90,6 +113,29 @@ test("advertises image admission and routes DeepSeek images through the configur
   assert.equal(JSON.stringify(calls.at(-1).messages).includes('"type":"image"'), false);
   assert.match(JSON.stringify(calls.at(-1).messages), /vision-model/);
   assert.doesNotMatch(JSON.stringify(calls.at(-1).messages), /\$\{config\.visionModel\}/);
+  assert.doesNotMatch(JSON.stringify(calls.at(-1).messages), /image-vision-bridge/);
+  assert.match(JSON.stringify(calls.at(-1).messages), /project-structure-viewer/);
+  assert.deepEqual(calls.at(-1).tools, []);
+  assert.match(calls.at(-1).system, /Do not search the web/);
+
+  calls.push({ marker: "separator" });
+  const laterMessages = [...decision.messages, {
+    id: "a1",
+    role: "assistant",
+    source: { kind: "model", provider: "deepseek-official", model: "deepseek-model" },
+    content: [{ type: "text", text: "done" }],
+  }];
+  const later = listeners.get("llm/stream")[0](
+    {
+      provider: "deepseek-official",
+      model: "deepseek-model",
+      messages: laterMessages,
+      tools: [{ name: "bash", description: "run shell", parameters: {} }],
+    },
+    () => { throw new Error("historical image request was not intercepted"); },
+  );
+  await Array.fromAsync(later);
+  assert.equal(calls.at(-1).tools.length, 1);
 
   cleanup();
   assert.deepEqual(
