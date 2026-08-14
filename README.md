@@ -26,13 +26,15 @@
 ## 行为
 
 - 仅拦截 `sourceProviders` 中的模型路由，默认是 `deepseek-official`。
+- 只分析当前轮由用户明确附加的图片；工具输出、历史图片和本地文件不会被识别成新附件。
 - 图片消息先交给 `visionProvider / visionModel`，默认是 `minimax-cn / MiniMax-M3`。
+- 视觉调用默认尝试两次；全部失败时直接返回安全错误，不调用 DeepSeek，也不进入工具链。
 - 视觉描述作为插件上下文写入会话，后续轮次不会重复识图。
 - 原图保留在聊天记录中，但在进入 DeepSeek 适配器前被移除。
 - 其他模型和无图片消息不受影响。
 - 插件会向 Harness 的图片准入层声明 DeepSeek 已具备路由后的图片能力。
-- 首次图片回答会移除图片技能入口并注入安全边界，防止模型扫描本地文件、剪贴板或联网二次识别。
-- 非图片技能与正常项目工具保持可用，发送参考图不会阻断编码、读取项目或其他任务，也不会造成工具协议文本泄漏。
+- 首次图片回答会移除图片技能入口并启用执行层防护，拒绝读图、图片文件搜索、剪贴板读取、联网反查和可逃逸的子智能体调用。
+- 非图片技能与正常项目读写工具保持可用，发送参考图不会阻断编码或读取项目，也不会造成工具协议文本泄漏。
 
 ## 安装
 
@@ -59,6 +61,7 @@ node scripts/install.mjs \
   --vision-provider minimax-cn \
   --vision-model MiniMax-M3 \
   --vision-max-tokens 4096 \
+  --vision-attempts 2 \
   --source-provider deepseek-official
 ```
 
@@ -72,6 +75,7 @@ node scripts/install.mjs \
         visionProvider: minimax-cn
         visionModel: MiniMax-M3
         visionMaxTokens: 4096
+        visionAttempts: 2
         sourceProviders: [deepseek-official]
 ```
 
@@ -81,7 +85,7 @@ node scripts/install.mjs \
 
 图片会发送给配置的识图模型；DeepSeek 只收到视觉模型生成的文字描述。插件不读取或上传凭据、历史会话目录与其他本地文件。
 
-视觉描述注入后的第一次 DeepSeek 调用会附加系统级安全边界，并移除图片 Skill；其他项目工具仍可用于完成用户任务。如果描述不足，DeepSeek 应直接说明无法确认，而不是用这些工具在本机或网络上继续寻找图片。
+视觉描述注入后的图片轮次会附加系统级安全边界、移除图片 Skill，并在工具执行层拒绝读图、图片发现、剪贴板、联网搜索与子智能体逃逸；其他项目工具仍可用于完成用户任务。如果视觉模型连续失败，插件会直接生成失败回复，不再调用 DeepSeek。
 
 安装并启用本插件，意味着当 `sourceProviders` 中的模型收到聊天图片时，图片会自动发送到你配置的 `visionProvider / visionModel`。请只配置你信任的视觉服务。该自动发送范围仅限用户在聊天中附加的图片，不包含本地目录中的其他文件。
 

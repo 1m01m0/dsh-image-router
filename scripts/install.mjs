@@ -36,11 +36,11 @@ function dshHome() {
   return resolve(explicit && explicit.trim() ? explicit : defaultHome());
 }
 
-function positiveInteger(raw, fallback) {
+function positiveInteger(raw, fallback, flag) {
   if (raw === undefined) return fallback;
   const parsed = Number(raw);
   if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-    throw new Error("--vision-max-tokens must be a positive integer");
+    throw new Error(flag + " must be a positive integer");
   }
   return parsed;
 }
@@ -87,7 +87,8 @@ if (!existsSync(join(profile, "cordis.yml"))) {
 
 const visionProvider = value("--vision-provider") || "minimax-cn";
 const visionModel = value("--vision-model") || "MiniMax-M3";
-const visionMaxTokens = positiveInteger(value("--vision-max-tokens"), 4096);
+const visionMaxTokens = positiveInteger(value("--vision-max-tokens"), 4096, "--vision-max-tokens");
+const visionAttempts = positiveInteger(value("--vision-attempts"), 2, "--vision-attempts");
 const sourceProviders = values("--source-provider");
 if (sourceProviders.length === 0) sourceProviders.push("deepseek-official");
 
@@ -112,6 +113,7 @@ const block = [
   "        visionProvider: " + JSON.stringify(visionProvider),
   "        visionModel: " + JSON.stringify(visionModel),
   "        visionMaxTokens: " + visionMaxTokens,
+  "        visionAttempts: " + visionAttempts,
   "        sourceProviders: " + JSON.stringify(sourceProviders),
 ].join("\n");
 const next = cleaned === "[]" || cleaned === ""
@@ -121,5 +123,6 @@ await writeFile(patchFile, next);
 
 console.log("✓ Installed " + PLUGIN_NAME + " to " + installDir);
 console.log("✓ Vision route: " + visionProvider + " / " + visionModel);
+console.log("✓ Vision attempts: " + visionAttempts);
 console.log("✓ Source providers: " + sourceProviders.join(", "));
 console.log("Restart DeepSeek Harness to apply the change.");

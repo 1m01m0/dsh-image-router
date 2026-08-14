@@ -88,8 +88,9 @@ test("advertises image admission and routes DeepSeek images through the configur
     }],
   };
   const signal = new AbortController().signal;
+  const agent = { options: { provider: "deepseek-official" } };
   const decision = await listeners.get("agent/pre-step")[0](
-    { agent: { options: { provider: "deepseek-official" } }, messages: [image], signal },
+    { agent, messages: [image], turn: 1, step: 1, signal },
     async () => ({ kind: "enter", messages: [image, skillCatalog] }),
   );
   assert.equal(calls[0].provider, "vision-provider");
@@ -119,7 +120,61 @@ test("advertises image admission and routes DeepSeek images through the configur
     { name: "run_code", description: "execute tool program", parameters: {} },
   ]);
   assert.match(calls.at(-1).system, /use the provided tools and non-image skills/);
+  assert.match(calls.at(-1).system, /tools\/pre-execute guard enforces this restriction/);
   assert.match(calls.at(-1).system, /Do not search the web/);
+
+  const preExecute = listeners.get("tools/pre-execute")[0];
+  const allow = async () => ({ kind: "allow" });
+  assert.deepEqual(
+    await preExecute({ agent, name: "read_image", arguments: { path: "/tmp/a.png" } }, allow),
+    { kind: "deny", reason: "dsh-image-router blocked read_image: use only the routed visual description" },
+  );
+  assert.equal(
+    (await preExecute({ agent, name: "glob", arguments: { pattern: "**/*.jpg", path: "/Users/emo" } }, allow)).kind,
+    "deny",
+  );
+  assert.equal(
+    (await preExecute({ agent, name: "web_search", arguments: { query: "who is in this image" } }, allow)).kind,
+    "deny",
+  );
+  assert.equal(
+    (await preExecute({ agent, name: "bash", arguments: { command: "find /Users/emo/Downloads -name '*.jpg'" } }, allow)).kind,
+    "deny",
+  );
+  assert.equal(
+    (await preExecute({ agent, name: "subagent", arguments: { task: "find the attached image" } }, allow)).kind,
+    "deny",
+  );
+  assert.equal(
+    (await preExecute({ agent, name: "read", arguments: { file_path: "/project/src/app.ts" } }, allow)).kind,
+    "allow",
+  );
+  assert.equal(
+    (await preExecute({ agent, name: "bash", arguments: { command: "npm test" } }, allow)).kind,
+    "allow",
+  );
+
+  const visionCallsBeforeToolImage = calls.filter((call) => call.provider === "vision-provider").length;
+  const toolImage = {
+    id: "tool-image",
+    role: "user",
+    source: { kind: "plugin", plugin: "tool-fs" },
+    content: [{
+      type: "tool-result",
+      content: [{
+        type: "image",
+        attachment: { attachmentId: "local-file", mediaType: "image/jpeg", bytes: 1, width: 1, height: 1 },
+      }],
+    }],
+  };
+  await listeners.get("agent/pre-step")[0](
+    { agent, messages: [toolImage], turn: 1, step: 2, signal },
+    async () => ({ kind: "enter", messages: [toolImage] }),
+  );
+  assert.equal(
+    calls.filter((call) => call.provider === "vision-provider").length,
+    visionCallsBeforeToolImage,
+  );
 
   calls.push({ marker: "separator" });
   const laterMessages = [...decision.messages, {
@@ -140,9 +195,77 @@ test("advertises image admission and routes DeepSeek images through the configur
   await Array.fromAsync(later);
   assert.equal(calls.at(-1).tools.length, 1);
 
+  listeners.get("agent/turn-stopping")[0]({ agent, turn: 1 });
+  assert.equal(
+    (await preExecute({ agent, name: "read_image", arguments: { path: "/tmp/a.png" } }, allow)).kind,
+    "allow",
+  );
+
   cleanup();
   assert.deepEqual(
     (await llm.resolveModelInfo("deepseek-official", "deepseek-model")).inputModalities,
     ["text"],
   );
+});
+
+test("retries vision failures, then fails closed without calling DeepSeek", async () => {
+  const listeners = new Map();
+  const calls = [];
+  const llm = {
+    async resolveModelInfo(provider, model) {
+      return { provider, id: model, inputModalities: ["text"] };
+    },
+    async listModels() { return []; },
+    stream(options) {
+      calls.push(options);
+      if (options.provider === "vision-provider") {
+        return chunks([{ type: "finish", reason: { kind: "error", failure: { message: "terminated" } } }]);
+      }
+      throw new Error("DeepSeek must not run after failed vision analysis");
+    },
+  };
+  const ctx = {
+    llm,
+    effect(install) { install(); },
+    on(name, callback) {
+      const list = listeners.get(name) || [];
+      list.push(callback);
+      listeners.set(name, list);
+    },
+  };
+  plugin._test.applyWithFactory(ctx, {
+    visionProvider: "vision-provider",
+    visionModel: "vision-model",
+    visionAttempts: 2,
+    sourceProviders: ["deepseek-official"],
+  }, createUserMessage);
+
+  const image = {
+    id: "u-failure",
+    role: "user",
+    source: { kind: "user" },
+    content: [{
+      type: "image",
+      attachment: { attachmentId: "failure-image", mediaType: "image/png", bytes: 1, width: 1, height: 1 },
+    }],
+  };
+  const agent = { options: { provider: "deepseek-official" } };
+  const signal = new AbortController().signal;
+  const decision = await listeners.get("agent/pre-step")[0](
+    { agent, messages: [image], turn: 1, step: 1, signal },
+    async () => ({ kind: "enter", messages: [image] }),
+  );
+  assert.equal(calls.filter((call) => call.provider === "vision-provider").length, 2);
+  const failure = decision.messages.find((message) => message.source?.plugin === "dsh-image-router");
+  assert.match(failure.content[0].text, /^\[视觉分析失败\]/);
+
+  const safeFailure = listeners.get("llm/stream")[0]({
+    provider: "deepseek-official",
+    model: "deepseek-model",
+    messages: decision.messages,
+    tools: [{ name: "run_code", parameters: {} }],
+  }, () => { throw new Error("failed vision request was not intercepted"); });
+  const output = await Array.fromAsync(safeFailure);
+  assert.match(output.find((chunk) => chunk.type === "text-delta").text, /本轮已安全停止/);
+  assert.equal(calls.some((call) => call.provider === "deepseek-official"), false);
 });
