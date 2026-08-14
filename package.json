@@ -1,0 +1,15 @@
+{
+  "name": "dsh-image-router",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Use a configurable multimodal model as a vision pre-pass for DeepSeek Harness",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT"
+}
